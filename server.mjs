@@ -30,6 +30,7 @@ http.createServer(async(req,res)=>{
   if(Number(req.headers['content-length']||0)>65536)return send(res,413,{error:'Request is too large.'});
   let body='';for await(const chunk of req){body+=chunk;if(body.length>65536)return send(res,413,{error:'Request is too large.'})}let q={};try{q=JSON.parse(body||'{}')}catch{}
   if(req.url==='/projects')return send(res,200,{projects:Object.keys(projects)});
+  if(req.method==='DELETE'&&req.url==='/jobs'){const cleared=jobs.size;jobs.clear();return send(res,200,{cleared});}
   if(req.method==='GET'&&req.url.startsWith('/jobs/')){const job=jobs.get(req.url.slice('/jobs/'.length));return job?send(res,200,job):send(res,404,{error:'Job not found.'})}
   if(req.url==='/mission'){try{const task=String(q.task||'').slice(0,6000),agent=q.agent==='Grok'?'Grok':'OpenCode';if(!task)return send(res,400,{error:'Tell Nova what needs doing.'});const job=startJob({project:q.project,agent,task});return send(res,202,{job:{id:job.id,status:job.status,command:job.command}})}catch(e){return send(res,409,{error:e.message})}}
   if(req.url==='/chat'){
