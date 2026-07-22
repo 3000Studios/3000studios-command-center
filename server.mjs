@@ -21,6 +21,8 @@ async function cloudBrief(task){const r=await fetch('https://api.openai.com/v1/r
 http.createServer(async(req,res)=>{
   if(req.method==='GET'&&req.url==='/'){secure(res);res.writeHead(200,{'content-type':'text/html','cache-control':'no-store'});return res.end(page)}
   if(req.method==='GET'&&req.url==='/host.png'){secure(res);res.writeHead(200,{'content-type':'image/png','cache-control':'no-store'});return res.end(host)}
+  if(req.method==='GET'&&req.url==='/manifest.webmanifest'){secure(res);res.writeHead(200,{'content-type':'application/manifest+json','cache-control':'no-store'});return res.end(fs.readFileSync(path.join(root,'manifest.webmanifest')))}
+  if(req.method==='GET'&&req.url==='/sw.js'){secure(res);res.writeHead(200,{'content-type':'application/javascript','cache-control':'no-store'});return res.end(fs.readFileSync(path.join(root,'sw.js')))}
   if(req.method==='GET'&&req.url==='/health')return send(res,200,{ok:true,local:{available:await ollamaReady(),model:localModel},cloud:{available:Boolean(env.OPENAI_API_KEY)},voice:{available:Boolean(env.OPENAI_API_KEY)}});
   if(Number(req.headers['content-length']||0)>65536)return send(res,413,{error:'Request is too large.'});
   let body='';for await(const chunk of req){body+=chunk;if(body.length>65536)return send(res,413,{error:'Request is too large.'})}let q={};try{q=JSON.parse(body||'{}')}catch{}
