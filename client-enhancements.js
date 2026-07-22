@@ -17,6 +17,9 @@
       if (job.status === 'completed') {
         window.state?.('JOB FINISHED', 'Worker ended. Read its final output for visual production verification evidence.');
         window.log?.('Job finished', 'Worker completed; this is not a live claim without visual proof.');
+      } else if (job.status === 'needs-commit') {
+        window.state?.('COMMIT REQUIRED', 'Worker changed files but did not create a clean pushed release. The terminal output names the blocker.');
+        window.log?.('Deployment blocked', 'Uncommitted work remains, so Cloudflare has nothing new to deploy.', true);
       } else {
         window.state?.('JOB FAILED', 'The worker stopped with an error; the terminal output is shown below.');
         window.log?.('Job failed', 'Review the terminal output below.', true);
