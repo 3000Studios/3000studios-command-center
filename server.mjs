@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {createTokenGuard} from './token-guard.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn,execFileSync} from 'node:child_process';
@@ -6,6 +7,7 @@ import {spawn,execFileSync} from 'node:child_process';
 const root=path.dirname(new URL(import.meta.url).pathname).replace(/^\//,'');
 const parse=p=>Object.fromEntries(fs.readFileSync(p,'utf8').split(/\r?\n/).flatMap(line=>{const i=line.indexOf('=');return i>0&&!line.trim().startsWith('#')?[[line.slice(0,i).trim(),line.slice(i+1).trim()]]:[]}));
 const env=parse('C:/Documents2/global.env');
+const tokenGuard=createTokenGuard(env);
 const page=fs.readFileSync(path.join(root,'index.html'));
 const host=fs.readFileSync(path.join(root,'host.png'));
 const localUrl=env.OLLAMA_URL||'http://127.0.0.1:11434';
@@ -18,7 +20,28 @@ const send=(res,status,body)=>{secure(res);res.writeHead(status,{'content-type':
 const textFrom=j=>j.output_text||j.output?.flatMap(i=>i.content||[]).filter(p=>p.type==='output_text').map(p=>p.text).join('')||j.error?.message||'No response';
 async function ollamaReady(){try{const r=await fetch(`${localUrl}/api/tags`,{signal:AbortSignal.timeout(900)});return r.ok}catch{return false}}
 async function localBrief(task){const r=await fetch(`${localUrl}/api/chat`,{method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(8000),body:JSON.stringify({model:localModel,stream:false,think:false,keep_alive:'10m',options:{temperature:.35,num_predict:300},messages:[{role:'system',content:briefPolicy},{role:'user',content:`Task: ${task}`}]})});const j=await r.json();if(!r.ok||!j.message?.content)throw Error('Local model unavailable');return j.message.content}
-async function cloudBrief(task){const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:`Bearer ${env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:env.OPENAI_MODEL||'gpt-4.1-mini',input:`${briefPolicy}\nTask: ${task}`})});const j=await r.json();if(!r.ok)throw Error(textFrom(j));return textFrom(j)}
+async function cloudBrief(task){
+  if(!env.OPENAI_API_KEY)throw Error('No cloud API key configured.');
+  const model=env.OPENAI_MODEL||'gpt-4.1-mini';
+  const prompt=briefPolicy+'\nTask: '+task;
+  const hit=tokenGuard.cached(model,prompt);
+  if(hit!==null)return hit;
+  const reserved=tokenGuard.reserve(prompt);
+  let settled=false;
+  try{
+    const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:`Bearer ${env.OPENAI_API_KEY}`,'content-type':'application/json'},signal:AbortSignal.timeout(45000),body:JSON.stringify({model,input:prompt,max_output_tokens:tokenGuard.maxOutputTokens})});
+    const j=await r.json();
+    tokenGuard.settle(reserved,j.usage?.total_tokens);
+    settled=true;
+    if(!r.ok)throw Error(textFrom(j));
+    const answer=textFrom(j);
+    tokenGuard.remember(model,prompt,answer);
+    return answer;
+  }catch(e){
+    if(!settled)tokenGuard.settle(reserved,reserved);
+    throw e;
+  }
+}
 function startJob({project,agent,task}){const cwd=projects[project];if(!cwd)throw Error(`${project} has no mapped canonical source workspace.`);const id=`job-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;const job={id,project,agent,status:'running',startedAt:new Date().toISOString(),output:[],command:''};const instructions=`${task}\n\nYou own this mission end-to-end. Inspect the project instructions, implement the scoped work, run relevant checks, commit and push main when appropriate, then visually verify the real production site/store. Never claim live without visual evidence. Report exact errors if blocked. Do not ask for a routine confirmation.`;const cmd=agent==='Grok'?'grok':'opencode';const args=agent==='Grok'?['--cwd',cwd,'--permission-mode','acceptEdits',instructions]:['run','--agent','build',instructions];job.command=`${cmd} ${args.map(x=>JSON.stringify(x)).join(' ')}`;jobs.set(id,job);const child=spawn(cmd,args,{cwd,windowsHide:true});const append=(label,data)=>{const text=String(data).trim();if(text)job.output.push(`[${label}] ${text}`);if(job.output.length>80)job.output.splice(0,job.output.length-80)};child.stdout.on('data',d=>append('out',d));child.stderr.on('data',d=>append('err',d));child.on('error',e=>{append('error',e.message);job.status='failed';job.finishedAt=new Date().toISOString()});child.on('close',code=>{job.exitCode=code;job.finishedAt=new Date().toISOString();if(code!==0){job.status='failed';append('system',`Worker exited with code ${code}.`);return}try{const dirty=execFileSync('git',['status','--porcelain'],{cwd,encoding:'utf8'}).trim();const head=execFileSync('git',['rev-parse','--short','HEAD'],{cwd,encoding:'utf8'}).trim();if(dirty){job.status='needs-commit';append('system',`Worker ended, but ${dirty.split(/\r?\n/).length} uncommitted file(s) remain. Cloudflare cannot deploy until a reviewed commit is pushed.`)}else{job.status='completed';append('system',`Worker ended cleanly at commit ${head}. Check its final report for required visual production verification.`)}}catch(e){job.status='failed';append('error',`Could not inspect Git state: ${e.message}`)}});return job}
 http.createServer(async(req,res)=>{
   if(req.method==='GET'&&req.url==='/'){secure(res);res.writeHead(200,{'content-type':'text/html','cache-control':'no-store'});return res.end(page)}
@@ -26,6 +49,7 @@ http.createServer(async(req,res)=>{
   if(req.method==='GET'&&req.url==='/manifest.webmanifest'){secure(res);res.writeHead(200,{'content-type':'application/manifest+json','cache-control':'no-store'});return res.end(fs.readFileSync(path.join(root,'manifest.webmanifest')))}
   if(req.method==='GET'&&req.url==='/sw.js'){secure(res);res.writeHead(200,{'content-type':'application/javascript','cache-control':'no-store'});return res.end(fs.readFileSync(path.join(root,'sw.js')))}
   if(req.method==='GET'&&req.url==='/client-enhancements.js'){secure(res);res.writeHead(200,{'content-type':'application/javascript','cache-control':'no-store'});return res.end(fs.readFileSync(path.join(root,'client-enhancements.js')))}
+  if(req.method==='GET'&&req.url==='/token-usage'){try{return send(res,200,tokenGuard.stats())}catch{return send(res,503,{error:'Usage ledger unavailable; paid requests blocked.'})}}
   if(req.method==='GET'&&req.url==='/health')return send(res,200,{ok:true,local:{available:await ollamaReady(),model:localModel},cloud:{available:Boolean(env.OPENAI_API_KEY)},voice:{available:Boolean(env.OPENAI_API_KEY)}});
   if(Number(req.headers['content-length']||0)>65536)return send(res,413,{error:'Request is too large.'});
   let body='';for await(const chunk of req){body+=chunk;if(body.length>65536)return send(res,413,{error:'Request is too large.'})}let q={};try{q=JSON.parse(body||'{}')}catch{}
@@ -35,7 +59,7 @@ http.createServer(async(req,res)=>{
   if(req.url==='/mission'){try{const task=String(q.task||'').slice(0,6000),agent=q.agent==='Grok'?'Grok':'OpenCode';if(!task)return send(res,400,{error:'Tell Nova what needs doing.'});const job=startJob({project:q.project,agent,task});return send(res,202,{job:{id:job.id,status:job.status,command:job.command}})}catch(e){return send(res,409,{error:e.message})}}
   if(req.url==='/chat'){
     const task=String(q.message||'').slice(0,6000);if(!task)return send(res,400,{error:'Tell Nova what you need done.'});
-    try{let text,provider='openai';if(q.mode!=='cloud'&&await ollamaReady()){try{text=await localBrief(task);provider='ollama'}catch{}}if(!text)text=await cloudBrief(task);return send(res,200,{text,provider})}catch{return send(res,502,{error:'Nova could not reach a configured model. Check the local service or OpenAI balance.'})}
+    try{const cloud=q.mode==='cloud';const text=cloud?await cloudBrief(task):await localBrief(task);return send(res,200,{text,provider:cloud?'openai':'ollama'})}catch(e){return send(res,502,{error:'Nova could not complete the request. Automatic paid fallback is disabled; check Ollama or choose cloud mode explicitly.',details:String(e.message||e).slice(0,180)})}
   }
   if(req.url==='/voice'){
     const input=String(q.text||'').slice(0,1800);if(!input)return send(res,400,{error:'Nothing to speak.'});
