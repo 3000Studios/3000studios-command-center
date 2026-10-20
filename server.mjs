@@ -23,7 +23,7 @@ async function localBrief(task){const r=await fetch(`${localUrl}/api/chat`,{meth
 async function cloudBrief(task){
   if(!env.OPENAI_API_KEY)throw Error('No cloud API key configured.');
   const model=env.OPENAI_MODEL||'gpt-4.1-mini';
-  const prompt=briefPolicy+'\\nTask: '+task;
+  const prompt=briefPolicy+'\nTask: '+task;
   const hit=tokenGuard.cached(model,prompt);
   if(hit!==null)return hit;
   const reserved=tokenGuard.reserve(prompt);
